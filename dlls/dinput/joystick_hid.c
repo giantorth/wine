@@ -1044,7 +1044,7 @@ static HRESULT hid_joystick_get_property( IDirectInputDevice8W *iface, DWORD pro
     case (DWORD_PTR)DIPROP_VIDPID:
     {
         DIPROPDWORD *value = (DIPROPDWORD *)header;
-        if (!impl->attrs.VendorID || !impl->attrs.ProductID) return DIERR_UNSUPPORTED;
+        if (!impl->attrs.VendorID && !impl->attrs.ProductID) return DIERR_UNSUPPORTED;
         value->dwData = MAKELONG( impl->attrs.VendorID, impl->attrs.ProductID );
         return DI_OK;
     }
