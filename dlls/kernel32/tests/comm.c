@@ -2088,7 +2088,7 @@ static void test_CloseWaitPending(void)
     ok(ret, "wait not completed\n");
     if (ret)
     {
-        todo_wine ok((NTSTATUS)ovl.Internal == STATUS_CANCELLED, "got status %#Ix\n", ovl.Internal);
+        ok((NTSTATUS)ovl.Internal == STATUS_CANCELLED, "got status %#Ix\n", ovl.Internal);
         ok(!ovl.InternalHigh, "got %Iu bytes\n", ovl.InternalHigh);
     }
 
