@@ -305,7 +305,8 @@ static void serial_ioctl( struct fd *fd, ioctl_code_t code, struct async *async 
             set_fd_events( serial->rx_fd, (serial->eventmask & SERIAL_EV_RXCHAR) ? POLLIN : 0 );
         }
         serial->history = 0;
-        async_wake_up( &serial->wait_q, STATUS_CANCELLED );
+        /* a pending wait completes successfully, with no events */
+        async_wake_up( &serial->wait_q, STATUS_SUCCESS );
         return;
 
     case IOCTL_SERIAL_WAIT_ON_MASK:

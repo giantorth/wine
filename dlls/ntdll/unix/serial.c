@@ -1064,6 +1064,11 @@ static BOOL async_wait_proc( void *user, ULONG_PTR *info, unsigned int *status )
 
     if (*status != STATUS_ALERTED)
     {
+        if (*status == STATUS_SUCCESS)  /* the event mask was changed */
+        {
+            *commio->events = 0;
+            *info = sizeof(*commio->events);
+        }
         release_fileio( &commio->io );
         return TRUE;
     }

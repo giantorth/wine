@@ -1979,8 +1979,8 @@ static void test_AbortWaitLoop(void)
         if (mode == 2)
             ok(!status, "CancelIoEx: %u of %u waits not completed with ERROR_OPERATION_ABORTED\n", status, count);
         else
-            todo_wine ok(!status, "%s: %u of %u waits not completed successfully with an empty mask\n",
-                         mode_name[mode], status, count);
+            ok(!status, "%s: %u of %u waits not completed successfully with an empty mask\n",
+               mode_name[mode], status, count);
     }
 
     SetCommMask(hcom, 0);
@@ -2040,9 +2040,9 @@ static void test_AbortWaitMask(void)
         bytes = 0xdeadbeef;
         SetLastError(0xdeadbeef);
         ret = GetOverlappedResult(hcom, &ovl, &bytes, FALSE);
-        todo_wine ok(ret, "GetOverlappedResult failed, error %lu\n", GetLastError());
-        todo_wine ok(bytes == sizeof(evtmask), "got %lu bytes\n", bytes);
-        todo_wine ok(!evtmask, "got event mask %#lx\n", evtmask);
+        ok(ret, "GetOverlappedResult failed, error %lu\n", GetLastError());
+        ok(bytes == sizeof(evtmask), "got %lu bytes\n", bytes);
+        ok(!evtmask, "got event mask %#lx\n", evtmask);
 
         winetest_pop_context();
     }
