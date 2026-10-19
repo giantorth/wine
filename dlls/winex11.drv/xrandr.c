@@ -953,7 +953,12 @@ static BOOL xrandr14_get_adapters( ULONG_PTR gpu_id, struct x11drv_adapter **new
     {
         output_info = pXRRGetOutputInfo( gdi_display, screen_resources, outputs[i] );
         if (!output_info)
-            goto done;
+        {
+            /* The output went away after the screen resources were fetched, e.g. Xwayland
+             * removing it when a monitor is disabled. Treat it like a disconnected output. */
+            WARN( "Output %#lx disappeared, skipping it.\n", outputs[i] );
+            continue;
+        }
 
         /* Only connected output are considered as monitors */
         if (output_info->connection != RR_Connected)
@@ -969,10 +974,11 @@ static BOOL xrandr14_get_adapters( ULONG_PTR gpu_id, struct x11drv_adapter **new
         {
             crtc_info = pXRRGetCrtcInfo( gdi_display, screen_resources, output_info->crtc );
             if (!crtc_info)
-                goto done;
+                WARN( "CRTC %#lx of output %#lx disappeared, treating the output as detached.\n",
+                      output_info->crtc, outputs[i] );
         }
 
-        if (!output_info->crtc || !crtc_info->mode)
+        if (!output_info->crtc || !crtc_info || !crtc_info->mode)
             detached = TRUE;
 
         /* Ignore mirroring output replicas because mirrored monitors are under the same adapter */
@@ -1094,17 +1100,25 @@ static BOOL xrandr14_get_monitors( ULONG_PTR adapter_id, struct gdi_monitor **ne
 
     output_info = pXRRGetOutputInfo( gdi_display, screen_resources, adapter_id );
     if (!output_info)
+    {
+        /* The adapter's output went away since the adapters were enumerated: no monitors. */
+        WARN( "Output %#lx disappeared, reporting no monitors for it.\n", adapter_id );
+        *new_monitors = monitors;
+        *count = 0;
+        ret = TRUE;
         goto done;
+    }
 
     if (output_info->crtc)
     {
         crtc_info = pXRRGetCrtcInfo( gdi_display, screen_resources, output_info->crtc );
         if (!crtc_info)
-            goto done;
+            WARN( "CRTC %#lx of output %#lx disappeared, treating the monitor as inactive.\n",
+                  output_info->crtc, adapter_id );
     }
 
     /* Inactive but attached monitor, no need to check for mirrored/replica monitors */
-    if (!output_info->crtc || !crtc_info->mode)
+    if (!output_info->crtc || !crtc_info || !crtc_info->mode)
     {
         monitors[monitor_count].edid_len = get_edid( adapter_id, &monitors[monitor_count].edid );
         monitor_count = 1;
@@ -1118,7 +1132,7 @@ static BOOL xrandr14_get_monitors( ULONG_PTR adapter_id, struct gdi_monitor **ne
         {
             enum_output_info = pXRRGetOutputInfo( gdi_display, screen_resources, screen_resources->outputs[i] );
             if (!enum_output_info)
-                goto done;
+                continue; /* output disappeared, it cannot be a replica */
 
             /* Detached outputs don't count */
             if (enum_output_info->connection != RR_Connected)
@@ -1142,7 +1156,11 @@ static BOOL xrandr14_get_monitors( ULONG_PTR adapter_id, struct gdi_monitor **ne
             {
                 enum_crtc_info = pXRRGetCrtcInfo( gdi_display, screen_resources, enum_output_info->crtc );
                 if (!enum_crtc_info)
-                    goto done;
+                {
+                    pXRRFreeOutputInfo( enum_output_info );
+                    enum_output_info = NULL;
+                    continue; /* CRTC disappeared, it cannot be a replica */
+                }
 
                 if (enum_crtc_info->x == crtc_info->x &&
                     enum_crtc_info->y == crtc_info->y &&
@@ -1491,11 +1509,12 @@ static BOOL xrandr14_get_current_mode( x11drv_settings_id id, DEVMODEW *mode )
     {
         crtc_info = pXRRGetCrtcInfo( gdi_display, screen_resources, output_info->crtc );
         if (!crtc_info)
-            goto done;
+            WARN( "CRTC %#lx of output %#lx disappeared, treating the output as detached.\n",
+                  output_info->crtc, output );
     }
 
     /* Detached */
-    if (output_info->connection != RR_Connected || !output_info->crtc || !crtc_info->mode)
+    if (output_info->connection != RR_Connected || !output_info->crtc || !crtc_info || !crtc_info->mode)
     {
         mode->dmFields = DM_DISPLAYORIENTATION | DM_BITSPERPEL | DM_PELSWIDTH | DM_PELSHEIGHT |
                          DM_DISPLAYFLAGS | DM_DISPLAYFREQUENCY | DM_POSITION;
