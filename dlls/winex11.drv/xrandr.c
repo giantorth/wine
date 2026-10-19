@@ -1698,6 +1698,7 @@ void X11DRV_XRandR_Init(void)
 
     /* see if Xrandr is available */
     if (!pXRRQueryExtension( gdi_display, &event_base, &error_base )) return;
+    xrandr_error_base = error_base;
     X11DRV_expect_error( gdi_display, XRandRErrorHandler, NULL );
     ok = pXRRQueryVersion( gdi_display, &major, &minor );
     if (X11DRV_check_error() || !ok) return;

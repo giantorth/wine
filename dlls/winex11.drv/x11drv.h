@@ -493,6 +493,7 @@ extern int primary_monitor;
 extern int copy_default_colors;
 extern int alloc_system_colors;
 extern int xrender_error_base;
+extern int xrandr_error_base;
 extern char *process_name;
 extern Display *clipboard_display;
 
