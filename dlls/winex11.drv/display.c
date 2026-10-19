@@ -405,7 +405,11 @@ UINT X11DRV_UpdateDisplayDevices( const struct gdi_device_manager *device_manage
         device_manager->add_gpu( gpus[gpu].name, &gpus[gpu].pci_id, &gpus[gpu].vulkan_uuid, param );
 
         /* Initialize adapters */
-        if (!host_handler.get_adapters( gpus[gpu].id, &adapters, &adapter_count )) break;
+        if (!host_handler.get_adapters( gpus[gpu].id, &adapters, &adapter_count ))
+        {
+            WARN( "Failed to get adapters of GPU %#lx, skipping it.\n", gpus[gpu].id );
+            continue;
+        }
         TRACE( "GPU: %#lx %s, adapter count: %d\n", gpus[gpu].id, debugstr_a( gpus[gpu].name ), adapter_count );
 
         for (adapter = 0; adapter < adapter_count; adapter++)
@@ -420,7 +424,11 @@ UINT X11DRV_UpdateDisplayDevices( const struct gdi_device_manager *device_manage
             sprintf( buffer, "%04lx", adapters[adapter].id );
             device_manager->add_source( buffer, adapters[adapter].state_flags, dpi, param );
 
-            if (!host_handler.get_monitors( adapters[adapter].id, &monitors, &monitor_count )) break;
+            if (!host_handler.get_monitors( adapters[adapter].id, &monitors, &monitor_count ))
+            {
+                WARN( "Failed to get monitors of adapter %#lx, skipping it.\n", adapters[adapter].id );
+                continue;
+            }
             TRACE("adapter: %#lx, monitor count: %d\n", adapters[adapter].id, monitor_count);
 
             /* Initialize monitors */
@@ -432,10 +440,10 @@ UINT X11DRV_UpdateDisplayDevices( const struct gdi_device_manager *device_manage
             /* Get the settings handler id for the adapter */
             snprintf( buffer, sizeof(buffer), "\\\\.\\DISPLAY%d", current_adapter_count + adapter + 1 );
             asciiz_to_unicode( devname, buffer );
-            if (!settings_handler.get_id( devname, is_primary, &settings_id )) break;
+            if (!settings_handler.get_id( devname, is_primary, &settings_id )) continue;
 
-            settings_handler.get_current_mode( settings_id, &current_mode );
-            if (settings_handler.get_modes( settings_id, EDS_ROTATEDMODE, &modes, &mode_count ))
+            if (settings_handler.get_current_mode( settings_id, &current_mode ) &&
+                settings_handler.get_modes( settings_id, EDS_ROTATEDMODE, &modes, &mode_count ))
             {
                 strip_driver_extra( &modes->mode, mode_count );
                 device_manager->add_modes( &current_mode, mode_count, &modes->mode, param );
