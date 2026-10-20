@@ -1104,8 +1104,17 @@ static BOOL async_wait_proc( void *user, ULONG_PTR *info, unsigned int *status )
                                          new_mstat, commio->mstat, commio->pending_write );
             if (!events)
             {
-                get_wait_mask( commio->handle, &dummy, &history,
-                               (commio->evtmask & EV_TXEMPTY) ? &commio->pending_write : NULL );
+                if (get_wait_mask( commio->handle, &dummy, &history,
+                                   (commio->evtmask & EV_TXEMPTY) ? &commio->pending_write : NULL ))
+                {
+                    /* the handle was closed after we got its fd */
+                    TRACE("get_wait_mask failed\n");
+                    if (needs_close) close( fd );
+                    *status = STATUS_CANCELLED;
+                    *info = 0;
+                    release_fileio( &commio->io );
+                    return TRUE;
+                }
                 events = history & commio->evtmask;
             }
             TRACE("events %#x\n", events);
