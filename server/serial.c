@@ -333,12 +333,12 @@ static void serial_ioctl( struct fd *fd, ioctl_code_t code, struct async *async 
         if (!(req = mem_alloc(sizeof(*req))))
             return;
 
-        req->serial = (struct serial *)grab_object( serial );
         if (!(req->timeout = add_timeout_user( WAIT_ON_MASK_POLL_INTERVAL, async_wait_timeout, req )))
         {
             free( req );
             return;
         }
+        req->serial = (struct serial *)grab_object( serial );
 
         async_set_completion_callback( async, free_wait_req, req );
         queue_async( &serial->wait_q, async );
