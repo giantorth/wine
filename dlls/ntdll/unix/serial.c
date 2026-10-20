@@ -1074,10 +1074,15 @@ static BOOL async_wait_proc( void *user, ULONG_PTR *info, unsigned int *status )
         return TRUE;
     }
 
-    ret = server_get_unix_fd( commio->handle, FILE_READ_DATA | FILE_WRITE_DATA, &fd, &needs_close, NULL, NULL );
-    /* the handle was closed; restart the wait, the server cancels it with the last handle */
-    if (ret == STATUS_INVALID_HANDLE) return FALSE;
-    if (!ret)
+    ret = server_get_unix_fd( commio->handle, FILE_READ_DATA, &fd, &needs_close, NULL, NULL );
+    if (ret)
+    {
+        /* the handle was closed, and its value may already be reused */
+        if (ret == STATUS_INVALID_HANDLE || ret == STATUS_OBJECT_TYPE_MISMATCH) ret = STATUS_CANCELLED;
+        *status = ret;
+        *info = 0;
+    }
+    else
     {
         serial_irq_info new_irq_info;
         UINT new_mstat, dummy, history;

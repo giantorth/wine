@@ -2196,7 +2196,7 @@ static void test_ReadOnlyWaitPending(void)
             skip("a real CTS event\n");
         else
         {
-            todo_wine ok(wait == WAIT_TIMEOUT, "wait completed, status %#Ix, mask %#lx\n", ovl.Internal, evtmask);
+            ok(wait == WAIT_TIMEOUT, "wait completed, status %#Ix, mask %#lx\n", ovl.Internal, evtmask);
             if (wait == WAIT_TIMEOUT) check_abort_pending_wait(hro, &ovl, &evtmask, action);
         }
         if (action != 2 || wait != WAIT_TIMEOUT)
