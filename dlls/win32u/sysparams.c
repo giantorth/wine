@@ -1839,6 +1839,19 @@ static void add_gpu( const char *name, const struct pci_id *pci_id, const GUID *
     if (opengl_gpu) free_gpu_info( opengl_gpu );
 }
 
+/* open an existing registry link key itself, without following the link */
+static HKEY reg_open_ascii_link_key( HKEY root, const char *name )
+{
+    WCHAR nameW[MAX_PATH];
+    UNICODE_STRING str = { .Buffer = nameW };
+    OBJECT_ATTRIBUTES attr = { .Length = sizeof(attr), .RootDirectory = root, .ObjectName = &str, .Attributes = OBJ_OPENLINK };
+    HANDLE ret;
+
+    str.Length = str.MaximumLength = asciiz_to_unicode( nameW, name ) - sizeof(WCHAR);
+    if (NtOpenKeyEx( &ret, MAXIMUM_ALLOWED, &attr, 0 )) return 0;
+    return ret;
+}
+
 static BOOL write_source_to_registry( struct source *source )
 {
     struct gpu *gpu = source->gpu;
@@ -1851,7 +1864,8 @@ static BOOL write_source_to_registry( struct source *source )
     len = asciiz_to_unicode( bufferW, buffer ) - sizeof(WCHAR);
 
     hkey = reg_create_ascii_key( NULL, buffer, REG_OPTION_VOLATILE | REG_OPTION_CREATE_LINK, NULL );
-    if (!hkey) hkey = reg_create_ascii_key( NULL, buffer, REG_OPTION_VOLATILE | REG_OPTION_OPEN_LINK, NULL );
+    /* the link already exists: open the link itself to re-point it, NtCreateKey would follow it */
+    if (!hkey) hkey = reg_open_ascii_link_key( NULL, buffer );
 
     snprintf( name, sizeof(name), "\\Device\\Video%u", source->id );
     set_reg_ascii_value( video_key, name, buffer );
@@ -1872,7 +1886,8 @@ static BOOL write_source_to_registry( struct source *source )
 
     snprintf( buffer, sizeof(buffer), "System\\CurrentControlSet\\Control\\Video\\%s\\%04x", gpu->guid, source_index );
     hkey = reg_create_ascii_key( config_key, buffer, REG_OPTION_VOLATILE | REG_OPTION_CREATE_LINK, NULL );
-    if (!hkey) hkey = reg_create_ascii_key( config_key, buffer, REG_OPTION_VOLATILE | REG_OPTION_OPEN_LINK, NULL );
+    /* the link already exists: open the link itself to re-point it, NtCreateKey would follow it */
+    if (!hkey) hkey = reg_open_ascii_link_key( config_key, buffer );
 
     len = asciiz_to_unicode( bufferW, source->path ) - sizeof(WCHAR);
     set_reg_value( hkey, symbolic_link_valueW, REG_LINK, bufferW, len );
