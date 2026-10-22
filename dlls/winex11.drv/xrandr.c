@@ -396,25 +396,6 @@ static LONG xrandr10_set_current_mode( x11drv_settings_id id, const struct x11dr
 
 #ifdef HAVE_XRRGETPROVIDERRESOURCES
 
-static struct current_mode
-{
-    ULONG_PTR id;
-    BOOL loaded;
-    DEVMODEW mode;
-} *current_modes;
-static int current_mode_count;
-
-static pthread_mutex_t xrandr_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-static void xrandr14_invalidate_current_mode_cache(void)
-{
-    pthread_mutex_lock( &xrandr_mutex );
-    free( current_modes);
-    current_modes = NULL;
-    current_mode_count = 0;
-    pthread_mutex_unlock( &xrandr_mutex );
-}
-
 static XRRScreenResources *xrandr_get_screen_resources(void)
 {
     XRRScreenResources *resources = pXRRGetScreenResourcesCurrent( gdi_display, root_window );
@@ -1243,7 +1224,6 @@ static BOOL xrandr14_device_change_handler( HWND hwnd, XEvent *event )
 {
     RECT rect;
 
-    xrandr14_invalidate_current_mode_cache();
     if (hwnd == NtUserGetDesktopWindow() && NtUserGetWindowThread( hwnd, NULL ) == GetCurrentThreadId())
         NtUserCallNoParam( NtUserCallNoParam_DisplayModeChanged );
     /* Update xinerama monitors for xinerama_get_fullscreen_monitors() */
@@ -1273,68 +1253,40 @@ static void xrandr14_register_event_handlers(void)
 /* XRandR 1.4 display settings handler */
 static BOOL xrandr14_get_id( const WCHAR *device_name, BOOL is_primary, x11drv_settings_id *id )
 {
-    struct current_mode *tmp_modes, *new_current_modes = NULL;
-    INT gpu_count, adapter_count, new_current_mode_count = 0;
-    INT gpu_idx, adapter_idx, display_idx;
+    INT gpu_count, adapter_count, adapter_base = 0;
+    INT gpu_idx, display_idx;
     struct x11drv_adapter *adapters;
     struct x11drv_gpu *gpus;
+    BOOL found = FALSE;
     WCHAR *end;
 
     /* Parse \\.\DISPLAY%d */
     display_idx = wcstol( device_name + 11, &end, 10 ) - 1;
-    if (*end)
+    if (*end || display_idx < 0)
         return FALSE;
 
-    /* Update cache */
-    pthread_mutex_lock( &xrandr_mutex );
-    if (!current_modes)
-    {
-        if (!xrandr14_get_gpus( &gpus, &gpu_count, FALSE ))
-        {
-            pthread_mutex_unlock( &xrandr_mutex );
-            return FALSE;
-        }
-
-        for (gpu_idx = 0; gpu_idx < gpu_count; ++gpu_idx)
-        {
-            if (!xrandr14_get_adapters( gpus[gpu_idx].id, &adapters, &adapter_count ))
-                break;
-
-            tmp_modes = realloc( new_current_modes, (new_current_mode_count + adapter_count) * sizeof(*tmp_modes) );
-            if (!tmp_modes)
-            {
-                xrandr14_free_adapters( adapters );
-                break;
-            }
-            new_current_modes = tmp_modes;
-
-            for (adapter_idx = 0; adapter_idx < adapter_count; ++adapter_idx)
-            {
-                new_current_modes[new_current_mode_count + adapter_idx].id = adapters[adapter_idx].id;
-                new_current_modes[new_current_mode_count + adapter_idx].loaded = FALSE;
-            }
-            new_current_mode_count += adapter_count;
-            xrandr14_free_adapters( adapters );
-        }
-        xrandr14_free_gpus( gpus, gpu_count );
-
-        if (new_current_modes)
-        {
-            free( current_modes );
-            current_modes = new_current_modes;
-            current_mode_count = new_current_mode_count;
-        }
-    }
-
-    if (display_idx >= current_mode_count)
-    {
-        pthread_mutex_unlock( &xrandr_mutex );
+    /* Resolve the index against the current host state on every call. The result used to be
+     * cached per process and only invalidated by XRandR events, which only the desktop thread
+     * receives, so any other process kept handing out ids of outputs that were long gone. */
+    if (!xrandr14_get_gpus( &gpus, &gpu_count, FALSE ))
         return FALSE;
-    }
 
-    id->id = current_modes[display_idx].id;
-    pthread_mutex_unlock( &xrandr_mutex );
-    return TRUE;
+    for (gpu_idx = 0; gpu_idx < gpu_count && !found; ++gpu_idx)
+    {
+        if (!xrandr14_get_adapters( gpus[gpu_idx].id, &adapters, &adapter_count ))
+            break;
+
+        if (display_idx < adapter_base + adapter_count)
+        {
+            id->id = adapters[display_idx - adapter_base].id;
+            found = TRUE;
+        }
+        adapter_base += adapter_count;
+        xrandr14_free_adapters( adapters );
+    }
+    xrandr14_free_gpus( gpus, gpu_count );
+
+    return found;
 }
 
 static void add_xrandr14_mode( struct x11drv_mode *mode, XRRModeInfo *info, DWORD depth, DWORD frequency,
@@ -1470,7 +1422,6 @@ done:
 
 static BOOL xrandr14_get_current_mode( x11drv_settings_id id, DEVMODEW *mode )
 {
-    struct current_mode *mode_ptr = NULL;
     XRRScreenResources *screen_resources;
     XRROutputInfo *output_info = NULL;
     RROutput output = (RROutput)id.id;
@@ -1479,23 +1430,6 @@ static BOOL xrandr14_get_current_mode( x11drv_settings_id id, DEVMODEW *mode )
     BOOL ret = FALSE;
     RECT primary;
     INT mode_idx;
-
-    pthread_mutex_lock( &xrandr_mutex );
-    for (mode_idx = 0; mode_idx < current_mode_count; ++mode_idx)
-    {
-        if (current_modes[mode_idx].id != id.id)
-            continue;
-
-        if (!current_modes[mode_idx].loaded)
-        {
-            mode_ptr = &current_modes[mode_idx];
-            break;
-        }
-
-        memcpy( mode, &current_modes[mode_idx].mode, sizeof(*mode) );
-        pthread_mutex_unlock( &xrandr_mutex );
-        return TRUE;
-    }
 
     screen_resources = xrandr_get_screen_resources();
     if (!screen_resources)
@@ -1558,14 +1492,6 @@ static BOOL xrandr14_get_current_mode( x11drv_settings_id id, DEVMODEW *mode )
     ret = TRUE;
 
 done:
-    if (ret && mode_ptr)
-    {
-        memcpy( &mode_ptr->mode, mode, sizeof(*mode) );
-        mode_ptr->mode.dmSize = sizeof(*mode);
-        mode_ptr->mode.dmDriverExtra = 0;
-        mode_ptr->loaded = TRUE;
-    }
-    pthread_mutex_unlock( &xrandr_mutex );
     if (crtc_info)
         pXRRFreeCrtcInfo( crtc_info );
     if (output_info)
@@ -1678,7 +1604,6 @@ done:
     if (output_info)
         pXRRFreeOutputInfo( output_info );
     pXRRFreeScreenResources( screen_resources );
-    xrandr14_invalidate_current_mode_cache();
     return ret;
 }
 
