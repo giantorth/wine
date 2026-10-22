@@ -1061,14 +1061,28 @@ static BOOL async_wait_proc( void *user, ULONG_PTR *info, unsigned int *status )
 {
     async_commio *commio = user;
     int fd, needs_close;
+    NTSTATUS ret;
 
     if (*status != STATUS_ALERTED)
     {
+        if (*status == STATUS_SUCCESS)  /* the event mask was changed */
+        {
+            *commio->events = 0;
+            *info = sizeof(*commio->events);
+        }
         release_fileio( &commio->io );
         return TRUE;
     }
 
-    if (!server_get_unix_fd( commio->handle, FILE_READ_DATA | FILE_WRITE_DATA, &fd, &needs_close, NULL, NULL ))
+    ret = server_get_unix_fd( commio->handle, FILE_READ_DATA, &fd, &needs_close, NULL, NULL );
+    if (ret)
+    {
+        /* the handle was closed, and its value may already be reused */
+        if (ret == STATUS_INVALID_HANDLE || ret == STATUS_OBJECT_TYPE_MISMATCH) ret = STATUS_CANCELLED;
+        *status = ret;
+        *info = 0;
+    }
+    else
     {
         serial_irq_info new_irq_info;
         UINT new_mstat, dummy, history;
@@ -1095,8 +1109,17 @@ static BOOL async_wait_proc( void *user, ULONG_PTR *info, unsigned int *status )
                                          new_mstat, commio->mstat, commio->pending_write );
             if (!events)
             {
-                get_wait_mask( commio->handle, &dummy, &history,
-                               (commio->evtmask & EV_TXEMPTY) ? &commio->pending_write : NULL );
+                if (get_wait_mask( commio->handle, &dummy, &history,
+                                   (commio->evtmask & EV_TXEMPTY) ? &commio->pending_write : NULL ))
+                {
+                    /* the handle was closed after we got its fd */
+                    TRACE("get_wait_mask failed\n");
+                    if (needs_close) close( fd );
+                    *status = STATUS_CANCELLED;
+                    *info = 0;
+                    release_fileio( &commio->io );
+                    return TRUE;
+                }
                 events = history & commio->evtmask;
             }
             TRACE("events %#x\n", events);

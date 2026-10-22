@@ -1891,6 +1891,22 @@ static DWORD CALLBACK abort_wait_thread(void *arg)
     return 0;
 }
 
+/* Start an overlapped WaitCommEvent for EV_CTS. FALSE if it did not stay
+   pending (a real CTS event, nothing to abort). */
+static BOOL start_pending_wait(HANDLE hcom, OVERLAPPED *ovl, DWORD *evtmask)
+{
+    BOOL ret;
+
+    ret = SetCommMask(hcom, EV_CTS);
+    ok(ret, "SetCommMask failed, error %lu\n", GetLastError());
+    *evtmask = 0xdeadbeef;
+    SetLastError(0xdeadbeef);
+    ret = WaitCommEvent(hcom, evtmask, ovl);
+    if (!ret && GetLastError() == ERROR_IO_PENDING) return TRUE;
+    trace("WaitCommEvent returned %d, error %lu, mask %#lx\n", ret, GetLastError(), *evtmask);
+    return FALSE;
+}
+
 /* Change the CommMask, or cancel the wait, from another thread after a
    short delay (0-3 ms) while an overlapped WaitCommEvent is pending. The
    wait must always complete, and CancelIoEx must always find it.
@@ -1905,7 +1921,7 @@ static void test_AbortWaitLoop(void)
     unsigned int mode, i, k, count, lost, failed, status;
     DWORD evtmask, bytes;
     HANDLE hcom, thread;
-    BOOL ret, waited;
+    BOOL ret, waited, completed;
 
     hcom = test_OpenComm(TRUE);
     if (hcom == INVALID_HANDLE_VALUE) return;
@@ -1920,23 +1936,19 @@ static void test_AbortWaitLoop(void)
         count = lost = failed = status = 0;
         for (i = 0; i < 200; i++)
         {
-            ret = SetCommMask(hcom, EV_CTS);
-            ok(ret, "SetCommMask failed, error %lu\n", GetLastError());
             args.mode = mode;
             args.delay = i % 4;
             args.ret = FALSE;
             thread = CreateThread(NULL, 0, abort_wait_thread, &args, 0, NULL);
             ok(thread != NULL, "CreateThread failed, error %lu\n", GetLastError());
 
-            evtmask = 0xdeadbeef;
-            SetLastError(0xdeadbeef);
-            ret = WaitCommEvent(hcom, &evtmask, &ovl);
-            waited = !ret && GetLastError() == ERROR_IO_PENDING;
+            waited = start_pending_wait(hcom, &ovl, &evtmask);
             if (waited)
             {
                 count++;
                 SetEvent(args.pending);
-                if (WaitForSingleObject(ovl.hEvent, 500))
+                completed = !WaitForSingleObject(ovl.hEvent, 500);
+                if (!completed)
                 {
                     lost++;
                     /* the cleanup can hit the same race, so insist */
@@ -1955,14 +1967,18 @@ static void test_AbortWaitLoop(void)
                         return;
                     }
                 }
+                bytes = 0xdeadbeef;
                 SetLastError(0xdeadbeef);
                 ret = GetOverlappedResult(hcom, &ovl, &bytes, FALSE);
-                if (mode == 2 && (ret || GetLastError() != ERROR_OPERATION_ABORTED)) status++;
+                if (completed && ret && evtmask == EV_CTS)
+                    trace("%s: a real CTS event before the abort\n", mode_name[mode]);
+                else if (mode == 2 && (ret || GetLastError() != ERROR_OPERATION_ABORTED)) status++;
+                /* SetCommMask completes the wait successfully, with an empty event mask */
+                else if (mode != 2 && completed && (!ret || bytes != sizeof(evtmask) || evtmask)) status++;
             }
             else
             {
                 /* a real CTS event, nothing to abort */
-                trace("WaitCommEvent returned %d, error %lu, mask %#lx\n", ret, GetLastError(), evtmask);
                 SetEvent(args.pending);
             }
             WaitForSingleObject(thread, INFINITE);
@@ -1974,12 +1990,282 @@ static void test_AbortWaitLoop(void)
         ok(!failed, "%s failed %u of %u times\n", mode_name[mode], failed, count);
         if (mode == 2)
             ok(!status, "CancelIoEx: %u of %u waits not completed with ERROR_OPERATION_ABORTED\n", status, count);
+        else
+            ok(!status, "%s: %u of %u waits not completed successfully with an empty mask\n",
+               mode_name[mode], status, count);
     }
 
     SetCommMask(hcom, 0);
     CloseHandle(ovl.hEvent);
     CloseHandle(args.pending);
     CloseHandle(hcom);
+}
+
+/* Change the CommMask from the same thread while an overlapped WaitCommEvent
+   is pending. The wait completes successfully with an empty event mask, both
+   for a new mask and for the same mask.
+   No special port connections needed
+*/
+static void test_AbortWaitMask(void)
+{
+    static const DWORD new_mask[] = { 0, EV_CTS };
+    /* static: a wait that is never completed must not point into a dead stack frame */
+    static OVERLAPPED ovl;
+    DWORD evtmask, bytes;
+    unsigned int i;
+    HANDLE hcom;
+    BOOL ret;
+
+    hcom = test_OpenComm(TRUE);
+    if (hcom == INVALID_HANDLE_VALUE) return;
+
+    ovl.hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+
+    for (i = 0; i < ARRAY_SIZE(new_mask); i++)
+    {
+        winetest_push_context("SetCommMask(%#lx)", new_mask[i]);
+
+        if (!start_pending_wait(hcom, &ovl, &evtmask))
+        {
+            skip("a real CTS event, nothing to abort\n");
+            winetest_pop_context();
+            continue;
+        }
+
+        ret = SetCommMask(hcom, new_mask[i]);
+        ok(ret, "SetCommMask failed, error %lu\n", GetLastError());
+        ret = !WaitForSingleObject(ovl.hEvent, TIMEOUT);
+        ok(ret, "wait not completed\n");
+        if (!ret)
+        {
+            CancelIoEx(hcom, &ovl);
+            WaitForSingleObject(ovl.hEvent, TIMEOUT);
+            winetest_pop_context();
+            continue;
+        }
+        bytes = 0xdeadbeef;
+        SetLastError(0xdeadbeef);
+        ret = GetOverlappedResult(hcom, &ovl, &bytes, FALSE);
+        if (ret && evtmask == EV_CTS)
+        {
+            skip("a real CTS event before the abort\n");
+            winetest_pop_context();
+            continue;
+        }
+        ok(ret, "GetOverlappedResult failed, error %lu\n", GetLastError());
+        ok(bytes == sizeof(evtmask), "got %lu bytes\n", bytes);
+        ok(!evtmask, "got event mask %#lx\n", evtmask);
+
+        winetest_pop_context();
+    }
+
+    SetCommMask(hcom, 0);
+    CloseHandle(ovl.hEvent);
+    CloseHandle(hcom);
+}
+
+/* Close the handle while an overlapped WaitCommEvent is pending. The wait is
+   cancelled and the port can be opened again.
+   No special port connections needed
+*/
+static void test_CloseWaitPending(void)
+{
+    /* static: a wait that is never completed must not point into a dead stack frame */
+    static OVERLAPPED ovl;
+    DWORD evtmask;
+    HANDLE hcom;
+    BOOL ret;
+
+    hcom = test_OpenComm(TRUE);
+    if (hcom == INVALID_HANDLE_VALUE) return;
+
+    ovl.hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (!start_pending_wait(hcom, &ovl, &evtmask))
+    {
+        skip("a real CTS event, nothing to abort\n");
+        SetCommMask(hcom, 0);
+        CloseHandle(ovl.hEvent);
+        CloseHandle(hcom);
+        return;
+    }
+
+    CloseHandle(hcom);
+    ret = !WaitForSingleObject(ovl.hEvent, TIMEOUT);
+    ok(ret, "wait not completed\n");
+    if (ret)
+    {
+        ok((NTSTATUS)ovl.Internal == STATUS_CANCELLED, "got status %#Ix\n", ovl.Internal);
+        ok(!ovl.InternalHigh, "got %Iu bytes\n", ovl.InternalHigh);
+    }
+
+    hcom = test_OpenComm(TRUE);
+    ok(hcom != INVALID_HANDLE_VALUE, "port not opened again, error %lu\n", GetLastError());
+    if (hcom != INVALID_HANDLE_VALUE) CloseHandle(hcom);
+    if (ret) CloseHandle(ovl.hEvent);
+}
+
+static const char * const abort_name[] = { "SetCommMask(0)", "CancelIoEx", "CloseHandle" };
+
+/* Abort a pending wait with SetCommMask(0), CancelIoEx or CloseHandle (which
+   closes hcom) and check how it completes. */
+static void check_abort_pending_wait(HANDLE hcom, OVERLAPPED *ovl, DWORD *evtmask, unsigned int action)
+{
+    DWORD bytes;
+    BOOL ret;
+
+    SetLastError(0xdeadbeef);
+    if (action == 0) ret = SetCommMask(hcom, 0);
+    else if (action == 1) ret = CancelIoEx(hcom, ovl);
+    else ret = CloseHandle(hcom);
+    ok(ret, "%s failed, error %lu\n", abort_name[action], GetLastError());
+
+    ret = !WaitForSingleObject(ovl->hEvent, TIMEOUT);
+    ok(ret, "wait not completed\n");
+    if (!ret)
+    {
+        if (action != 2)
+        {
+            CancelIoEx(hcom, ovl);
+            WaitForSingleObject(ovl->hEvent, TIMEOUT);
+        }
+        return;
+    }
+    if (action == 2)
+    {
+        ok((NTSTATUS)ovl->Internal == STATUS_CANCELLED, "got status %#Ix\n", ovl->Internal);
+        ok(!ovl->InternalHigh, "got %Iu bytes\n", ovl->InternalHigh);
+        return;
+    }
+
+    bytes = 0xdeadbeef;
+    SetLastError(0xdeadbeef);
+    ret = GetOverlappedResult(hcom, ovl, &bytes, FALSE);
+    if (ret && *evtmask == EV_CTS)
+        skip("a real CTS event before the abort\n");
+    else if (action == 0)
+    {
+        ok(ret, "GetOverlappedResult failed, error %lu\n", GetLastError());
+        ok(bytes == sizeof(*evtmask), "got %lu bytes\n", bytes);
+        ok(!*evtmask, "got event mask %#lx\n", *evtmask);
+    }
+    else
+        ok(!ret && GetLastError() == ERROR_OPERATION_ABORTED, "got %d, error %lu\n", ret, GetLastError());
+}
+
+/* A wait on a handle without write access stays pending, and is aborted like
+   any other. The port is exclusive, so the handle is a duplicate with less
+   access of the one test_OpenComm opened.
+   No special port connections needed
+*/
+static void test_ReadOnlyWaitPending(void)
+{
+    /* static: a wait that is never completed must not point into a dead stack frame */
+    static OVERLAPPED ovl;
+    unsigned int action;
+    HANDLE hcom, hro;
+    DWORD evtmask, wait;
+    BOOL ret;
+
+    ovl.hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+    for (action = 0; action < ARRAY_SIZE(abort_name); action++)
+    {
+        winetest_push_context("%s", abort_name[action]);
+
+        hcom = test_OpenComm(TRUE);
+        if (hcom == INVALID_HANDLE_VALUE)
+        {
+            ok(!action, "port not opened again, error %lu\n", GetLastError());
+            winetest_pop_context();
+            break;
+        }
+        ret = DuplicateHandle(GetCurrentProcess(), hcom, GetCurrentProcess(), &hro, FILE_GENERIC_READ, FALSE, 0);
+        ok(ret, "DuplicateHandle failed, error %lu\n", GetLastError());
+        CloseHandle(hcom);
+
+        if (!start_pending_wait(hro, &ovl, &evtmask))
+        {
+            skip("a real CTS event, nothing to abort\n");
+            SetCommMask(hro, 0);
+            CloseHandle(hro);
+            winetest_pop_context();
+            continue;
+        }
+
+        wait = WaitForSingleObject(ovl.hEvent, 100);
+        if (!wait && !ovl.Internal && evtmask == EV_CTS)
+            skip("a real CTS event\n");
+        else
+        {
+            ok(wait == WAIT_TIMEOUT, "wait completed, status %#Ix, mask %#lx\n", ovl.Internal, evtmask);
+            if (wait == WAIT_TIMEOUT) check_abort_pending_wait(hro, &ovl, &evtmask, action);
+        }
+        if (action != 2 || wait != WAIT_TIMEOUT)
+        {
+            SetCommMask(hro, 0);
+            CloseHandle(hro);
+        }
+
+        winetest_pop_context();
+    }
+    CloseHandle(ovl.hEvent);
+}
+
+/* Close the handle a wait was started on while a duplicate of it is still
+   open. The wait stays pending, and is aborted through the duplicate.
+   No special port connections needed
+*/
+static void test_CloseWaitDuplicate(void)
+{
+    /* static: a wait that is never completed must not point into a dead stack frame */
+    static OVERLAPPED ovl;
+    unsigned int action;
+    HANDLE hcom, hdup;
+    DWORD evtmask, wait;
+    BOOL ret;
+
+    ovl.hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+    for (action = 0; action < ARRAY_SIZE(abort_name); action++)
+    {
+        winetest_push_context("%s", abort_name[action]);
+
+        hcom = test_OpenComm(TRUE);
+        if (hcom == INVALID_HANDLE_VALUE)
+        {
+            ok(!action, "port not opened again, error %lu\n", GetLastError());
+            winetest_pop_context();
+            break;
+        }
+        ret = DuplicateHandle(GetCurrentProcess(), hcom, GetCurrentProcess(), &hdup, 0, FALSE, DUPLICATE_SAME_ACCESS);
+        ok(ret, "DuplicateHandle failed, error %lu\n", GetLastError());
+
+        if (!start_pending_wait(hcom, &ovl, &evtmask))
+        {
+            skip("a real CTS event, nothing to abort\n");
+            SetCommMask(hcom, 0);
+            CloseHandle(hcom);
+            CloseHandle(hdup);
+            winetest_pop_context();
+            continue;
+        }
+
+        CloseHandle(hcom);
+        wait = WaitForSingleObject(ovl.hEvent, 100);
+        if (!wait && !ovl.Internal && evtmask == EV_CTS)
+            skip("a real CTS event\n");
+        else
+        {
+            todo_wine ok(wait == WAIT_TIMEOUT, "wait completed, status %#Ix, mask %#lx\n", ovl.Internal, evtmask);
+            if (wait == WAIT_TIMEOUT) check_abort_pending_wait(hdup, &ovl, &evtmask, action);
+        }
+        if (action != 2 || wait != WAIT_TIMEOUT)
+        {
+            SetCommMask(hdup, 0);
+            CloseHandle(hdup);
+        }
+
+        winetest_pop_context();
+    }
+    CloseHandle(ovl.hEvent);
 }
 
 /*
@@ -2617,6 +2903,10 @@ START_TEST(comm)
     test_WaitCts();
     test_AbortWaitCts();
     test_AbortWaitLoop();
+    test_AbortWaitMask();
+    test_CloseWaitPending();
+    test_ReadOnlyWaitPending();
+    test_CloseWaitDuplicate();
     test_WaitDsr();
     test_WaitRing();
     test_WaitDcd();
