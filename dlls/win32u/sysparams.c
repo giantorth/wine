@@ -2300,7 +2300,9 @@ static BOOL is_monitor_active( struct monitor *monitor )
     if (!(source = monitor->source)) return TRUE;
     if (!(source->state_flags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP)) return FALSE;
     source_get_current_settings( source, &current_mode );
-    return !is_detached_mode( &current_mode );
+    if (is_detached_mode( &current_mode )) return FALSE;
+    /* a source whose current mode has no size, e.g. because the driver never provided one, cannot be active either */
+    return current_mode.dmPelsWidth && current_mode.dmPelsHeight;
 }
 
 static BOOL is_monitor_primary( struct monitor *monitor )
@@ -2466,13 +2468,17 @@ static void set_winstation_monitors( BOOL increment )
     TRACE( "increment %u\n", increment );
     LIST_FOR_EACH_ENTRY( monitor, &monitors, struct monitor, entry )
     {
+        RECT virt = monitor_get_rect( monitor, no_dpi, MDT_EFFECTIVE_DPI ), raw = monitor_get_rect( monitor, no_dpi, MDT_RAW_DPI );
+
         if (is_monitor_primary( monitor )) info->flags |= MONITOR_FLAG_PRIMARY;
         if (!is_monitor_active( monitor )) info->flags |= MONITOR_FLAG_INACTIVE;
+        /* the server scales points between the two rects, never let it see an active monitor with an empty one */
+        if (IsRectEmpty( &virt ) || IsRectEmpty( &raw )) info->flags |= MONITOR_FLAG_INACTIVE;
         if (monitor->is_clone) info->flags |= MONITOR_FLAG_CLONE;
         info->dpi = monitor_get_dpi( monitor, MDT_EFFECTIVE_DPI, &x, &y );
         info->raw_dpi = monitor_get_dpi( monitor, MDT_RAW_DPI, &x, &y );
-        info->virt = wine_server_rectangle( monitor_get_rect( monitor, no_dpi, MDT_EFFECTIVE_DPI ) );
-        info->raw = wine_server_rectangle( monitor_get_rect( monitor, no_dpi, MDT_RAW_DPI ) );
+        info->virt = wine_server_rectangle( virt );
+        info->raw = wine_server_rectangle( raw );
         TRACE( "  flags %#x virt %s dpi %s raw %s raw_dpi %s\n", info->flags, wine_dbgstr_rect( (RECT *)&info->virt ),
                debugstr_ratio( info->dpi ), wine_dbgstr_rect( (RECT *)&info->raw ), debugstr_ratio( info->raw_dpi ) );
         info++;
@@ -3072,6 +3078,7 @@ static struct monitor *get_monitor_from_rect( RECT rect, UINT flags, struct rati
         if (!is_monitor_active( monitor ) || monitor->is_clone) continue;
 
         monitor_rect = monitor_get_rect( monitor, dpi, type );
+        if (IsRectEmpty( &monitor_rect )) continue; /* no usable area, keep in sync with server/window.c */
         if (intersect_rect( &intersect, &monitor_rect, &rect ))
         {
             /* check for larger intersecting area */
