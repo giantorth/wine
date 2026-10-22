@@ -79,6 +79,7 @@ MAKE_FUNCPTR(XRRGetScreenSizeRange)
 MAKE_FUNCPTR(XRRSetCrtcConfig)
 MAKE_FUNCPTR(XRRSetScreenSize)
 MAKE_FUNCPTR(XRRSelectInput)
+MAKE_FUNCPTR(XRRUpdateConfiguration)
 MAKE_FUNCPTR(XRRGetOutputPrimary)
 MAKE_FUNCPTR(XRRGetProviderResources)
 MAKE_FUNCPTR(XRRFreeProviderResources)
@@ -124,6 +125,7 @@ static int load_xrandr(void)
         LOAD_FUNCPTR(XRRSetCrtcConfig);
         LOAD_FUNCPTR(XRRSetScreenSize);
         LOAD_FUNCPTR(XRRSelectInput);
+        LOAD_FUNCPTR(XRRUpdateConfiguration);
         LOAD_FUNCPTR(XRRGetOutputPrimary);
         LOAD_FUNCPTR(XRRGetProviderResources);
         LOAD_FUNCPTR(XRRFreeProviderResources);
@@ -1220,9 +1222,14 @@ static void xrandr14_free_monitors( struct gdi_monitor *monitors, int count )
     free( monitors );
 }
 
+static int xrandr_screen_change_event;
+
 static BOOL xrandr14_device_change_handler( HWND hwnd, XEvent *event )
 {
     RECT rect;
+
+    /* keep Xlib's screen configuration current for RRScreenChangeNotify */
+    if (event->type == xrandr_screen_change_event) pXRRUpdateConfiguration( event );
 
     if (hwnd == NtUserGetDesktopWindow() && NtUserGetWindowThread( hwnd, NULL ) == GetCurrentThreadId())
         NtUserCallNoParam( NtUserCallNoParam_DisplayModeChanged );
@@ -1240,8 +1247,12 @@ static void xrandr14_register_event_handlers(void)
     if (!pXRRQueryExtension( display, &event_base, &error_base ))
         return;
 
+    /* Output removal and primary output changes are only reported through
+     * RRScreenChangeNotify, so subscribe to it as well. */
+    xrandr_screen_change_event = event_base + RRScreenChangeNotify;
     pXRRSelectInput( display, root_window,
-                     RRCrtcChangeNotifyMask | RROutputChangeNotifyMask | RRProviderChangeNotifyMask );
+                     RRScreenChangeNotifyMask | RRCrtcChangeNotifyMask | RROutputChangeNotifyMask |
+                     RRProviderChangeNotifyMask );
     X11DRV_register_event_handler( event_base + RRNotify_CrtcChange, xrandr14_device_change_handler,
                                    "XRandR CrtcChange" );
     X11DRV_register_event_handler( event_base + RRNotify_OutputChange, xrandr14_device_change_handler,
