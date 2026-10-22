@@ -825,6 +825,13 @@ struct x11drv_settings_handler
      * Return FALSE if the device cannot be found and TRUE on success */
     BOOL (*get_id)(const WCHAR *device_name, BOOL is_primary, x11drv_settings_id *id);
 
+    /* get_id_from_adapter() maps an adapter id of the display device handler to a driver specific
+     * id directly, for settings handlers that share the id space of the display device handler of
+     * the same name. Optional, get_id() is used when it is NULL.
+     *
+     * Return FALSE if the device cannot be found and TRUE on success */
+    BOOL (*get_id_from_adapter)(ULONG_PTR adapter_id, x11drv_settings_id *id);
+
     /* get_modes() will be called to get a list of supported modes of the device of id in modes
      * with respect to flags, which could be 0, EDS_RAWMODE or EDS_ROTATEDMODE. If the implementation
      * uses dmDriverExtra then every DEVMODEW in the list must have the same dmDriverExtra value

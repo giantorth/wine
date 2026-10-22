@@ -1289,6 +1289,13 @@ static BOOL xrandr14_get_id( const WCHAR *device_name, BOOL is_primary, x11drv_s
     return found;
 }
 
+/* adapters are RROutputs, which the settings functions use as id as well */
+static BOOL xrandr14_get_id_from_adapter( ULONG_PTR adapter_id, x11drv_settings_id *id )
+{
+    id->id = adapter_id;
+    return TRUE;
+}
+
 static void add_xrandr14_mode( struct x11drv_mode *mode, XRRModeInfo *info, DWORD depth, DWORD frequency,
                                DWORD orientation )
 {
@@ -1612,7 +1619,7 @@ done:
 void X11DRV_XRandR_Init(void)
 {
     struct x11drv_display_device_handler display_handler;
-    struct x11drv_settings_handler settings_handler;
+    struct x11drv_settings_handler settings_handler = {0};
     int event_base, error_base, minor, ret;
     static int major;
     Bool ok;
@@ -1690,6 +1697,7 @@ void X11DRV_XRandR_Init(void)
         settings_handler.name = "XRandR 1.4";
         settings_handler.priority = 300;
         settings_handler.get_id = xrandr14_get_id;
+        settings_handler.get_id_from_adapter = xrandr14_get_id_from_adapter;
         settings_handler.get_modes = xrandr14_get_modes;
         settings_handler.get_current_mode = xrandr14_get_current_mode;
         settings_handler.set_current_mode = xrandr14_set_current_mode;
