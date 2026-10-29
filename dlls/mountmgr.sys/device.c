@@ -2156,15 +2156,28 @@ static void get_usb_instance_id( const struct serial_port_info *info, WCHAR *id,
     /* the ports of one interface share the device's serial number, and the interfaces of a
      * composite device leave it to their parent */
     BOOL use_serial = !info->composite && !info->multi_port && is_valid_usb_serial( info->serial );
+    unsigned int hash = 2166136261u;
+    const char *p;
     int pos;
 
     pos = swprintf( id, len, L"VID_%04X&PID_%04X", info->vid, info->pid );
     if (info->composite) pos += swprintf( id + pos, len - pos, L"&MI_%02X", info->interface );
     if (use_serial) swprintf( id + pos, len - pos, L"\\%hs", info->serial );
-    /* a generated ID contains '&', so that it isn't taken for a serial number */
+    /* a generated ID contains '&', so that it isn't taken for a serial number; like the ID that
+     * Windows derives from the parent device, it follows the device to another USB port if the
+     * device has a serial number, and is tied to the USB port otherwise */
     else
     {
-        pos += swprintf( id + pos, len - pos, L"\\7&wine&%hs&%u", info->location, info->interface );
+        if (!is_valid_usb_serial( info->serial ))
+            pos += swprintf( id + pos, len - pos, L"\\7&wine&%hs&%u", info->location, info->interface );
+        else
+        {
+            /* FNV-1 hash of the device, as the PnP manager does for the parent ID prefix */
+            hash = (hash * 16777619) ^ info->vid;
+            hash = (hash * 16777619) ^ info->pid;
+            for (p = info->serial; *p; p++) hash = (hash * 16777619) ^ (unsigned char)*p;
+            pos += swprintf( id + pos, len - pos, L"\\7&wine&%08x&%u", hash, info->interface );
+        }
         if (info->multi_port) swprintf( id + pos, len - pos, L"&%u", info->port );
     }
 }
